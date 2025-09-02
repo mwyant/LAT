@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<title>Parakeet Voice Transcriber</title>
+<style>
+    body{font-family:system-ui,Arial,sans-serif;background:#121212;color:#eee;margin:0;padding:2rem;}
+    h1{margin-bottom:.5rem;}
+    form{border:1px solid #333;border-radius:8px;padding:1rem;max-width:480px;margin:auto;background:#1e1e1e;}
+    input[type=file]{width:100%;padding:.4rem;margin: .6rem 0;}
+    button{background:#3b82f6;color:white;border:none;padding:.5rem 1rem;border-radius:4px;cursor:pointer;}
+    button:hover{background:#2563eb;}
+    pre{white-space:pre-wrap;background:#272727;padding:1rem;border-radius:6px;margin-top:1rem;font-size:.9rem;}
+</style>
+</head>
+<body>
+<h1>Parakeet Voice Transcriber</h1>
+<form id="uploadForm" enctype="multipart/form-data">
+    <label for="audio">Select audio (≤ 90 min, .wav/.flac)</label>
+    <input type="file" name="file" accept=".wav,.flac" required/>
+    <button type="submit">Transcribe</button>
+</form>
+<pre id="output"></pre>
+<script>
+document.getElementById('uploadForm').addEventListener('submit', async e => {
+    e.preventDefault();
+    const form = new FormData(e.target);
+    const outputEl = document.getElementById('output');
+    outputEl.textContent = '⏳ Transcribing…';
+    try {
+        const res = await fetch('/transcribe', {method:'POST', body:form});
+        if (!res.ok) throw new Error(await res.text());
+        const reader = res.body.getReader();
+        const decoder = new TextDecoder();
+        let result = '';
+        while (true) {
+            const {value, done} = await reader.read();
+            if (done) break;
+            result += decoder.decode(value, {stream:true});
+            outputEl.textContent = result;
+        }
+    } catch(err){outputEl.textContent='⚠️ '+err.message;}
+});
+</script>
+</body>
+</html>

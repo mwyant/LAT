@@ -1,0 +1,12 @@
+services:
+  web:
+    build: .
+    ports:
+      - "8000:8000"
+    volumes:
+      # Optional: persist uploaded files. Recommended to run compose from WSL
+      - ./data:/app/data
+    environment:
+      - PORT=8000
+    # Use Compose-level GPU request. Docker Desktop must have GPU support enabled.
+    gpus: all
