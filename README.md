@@ -17,3 +17,4 @@ Notes
 - If model loading fails or runs out of memory, check container logs and adjust GPU memory / attention context.
 - The "gpus: all" setting requires Docker Desktop GPU support enabled; there's no need to install legacy nvidia-docker on Windows.
 
+ADMIN NOTE: None of this is accurate at this time.
