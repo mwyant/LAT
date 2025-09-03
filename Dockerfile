@@ -13,21 +13,21 @@ WORKDIR /app
 
 #System deps (include audio libs)
 RUN apt-get update && apt-get upgrade -y
-RUN apt-get install -y --no-install-recommends /
-  bash /
-  ca-certificates /
-  curl /
-  git /
-  vim /
-  build-essential /
-  libsndfile1 /
-  ffmpeg /
-  sox /
-  python3 /
-  python3-dev /
-  python3-venv /
-  wget /
-  ca-certificates
+  RUN apt-get install -y --no-install-recommends \
+        bash \
+	ca-certificates \
+	curl \
+	git \
+	vim \
+	build-essential \
+	libsndfile1 \
+	ffmpeg \
+	sox \
+	python3 \
+	python3-dev \
+	python3-venv \
+	wget \
+	ca-certificates
 
 #Set cache locations inside the image so downloads land in writable paths
 ENV HF_HOME=/app/.cache/huggingface
@@ -39,11 +39,10 @@ COPY requirements.txt /app/requirements.txt
 
 #Create venv, install torch (GPU wheel) explicitly, then install the rest.
 #Adjust torch versions to match your CUDA runtime. We use cu128 for CUDA 12.8.
-RUN python3 -m venv /opt/venv &&
-/opt/venv/bin/python -m pip install --upgrade pip setuptools wheel &&
-/opt/venv/bin/pip install --no-cache-dir --extra-index-url https://download.pytorch.org/whl/cu128
-torch==2.7.0+cu128 torchvision==0.22.1 torchaudio==2.7.1 &&
-/opt/venv/bin/pip install --no-cache-dir -r /app/requirements.txt &&
+RUN python3 -m venv /opt/venv && \
+/opt/venv/bin/python -m pip install --upgrade pip setuptools wheel && \
+/opt/venv/bin/pip install --no-cache-dir --extra-index-url https://download.pytorch.org/whl/cu128 torch==2.7.0+cu128 torchvision==0.22.1 torchaudio==2.7.1 && \
+/opt/venv/bin/pip install --no-cache-dir -r /app/requirements.txt && \
 /opt/venv/bin/python -c "import fastapi, uvicorn, torch; print('py ok', torch.version, 'cuda_available=', torch.cuda.is_available())"
 
 #Ensure venv is used in all subsequent steps
