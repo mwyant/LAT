@@ -14,27 +14,27 @@ WORKDIR /app
 #System deps (include audio libs)
 RUN apt-get update && apt-get upgrade -y
 RUN apt-get install -y --no-install-recommends /
-	bash /
-	ca-certificates /
-	curl /
-	git /
-	vim /
-	build-essential /
-	libsndfile1 /
-	ffmpeg /
-	sox /
-	python3 /
-	python3-dev /
-	python3-venv /
-	wget /
-	ca-certificates
+  bash /
+  ca-certificates /
+  curl /
+  git /
+  vim /
+  build-essential /
+  libsndfile1 /
+  ffmpeg /
+  sox /
+  python3 /
+  python3-dev /
+  python3-venv /
+  wget /
+  ca-certificates
 
 #Set cache locations inside the image so downloads land in writable paths
 ENV HF_HOME=/app/.cache/huggingface
 ENV TORCH_HOME=/app/.cache/torch
 RUN mkdir -p $HF_HOME $TORCH_HOME && chmod -R 777 /app/.cache || true
 
-Copy requirements first so we can leverage layer caching when editing code
+#Copy requirements first so we can leverage layer caching when editing code
 COPY requirements.txt /app/requirements.txt
 
 #Create venv, install torch (GPU wheel) explicitly, then install the rest.
