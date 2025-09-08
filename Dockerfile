@@ -1,4 +1,5 @@
-FROM nvidia/cuda:12.8.0-devel-ubuntu24.04
+#FROM nvidia/cuda:12.8.0-devel-ubuntu24.04
+FROM nvidia/cuda:13.0.0-base-ubuntu24.04 
 ARG DEBIAN_FRONTEND=noninteractive
 ENV PORT=8000
 WORKDIR /app
@@ -41,7 +42,7 @@ COPY requirements.txt /app/requirements.txt
 #Adjust torch versions to match your CUDA runtime. We use cu128 for CUDA 12.8.
 RUN python3 -m venv /opt/venv && \
 /opt/venv/bin/python -m pip install --upgrade pip setuptools wheel && \
-/opt/venv/bin/pip install --no-cache-dir --extra-index-url https://download.pytorch.org/whl/cu128 torch==2.7.0+cu128 torchvision==0.22.1 torchaudio==2.7.1 && \
+/opt/venv/bin/pip install --no-cache-dir --extra-index-url https://download.pytorch.org/whl/cu128 torch==2.8.0+cu128 torchvision==0.23.0 torchaudio==2.8.0 && \
 /opt/venv/bin/pip install --no-cache-dir -r /app/requirements.txt && \
 /opt/venv/bin/python -c "import fastapi, uvicorn, torch; print('py ok', torch.version, 'cuda_available=', torch.cuda.is_available())"
 

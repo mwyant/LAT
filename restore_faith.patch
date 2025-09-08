@@ -1,0 +1,364 @@
+--- a/Dockerfile
++++ b/Dockerfile
+@@ -1,79 +1,127 @@
+-FROM nvidia/cuda:12.8.0-devel-ubuntu24.04
+-#LABEL org.opencontainers.image.authors="Mike Wyant Jr. <kainewynd2@gmail.com>"
+-#LABEL org.opencontainers.image.ref.name="transcription_assistant"
+-# TO DO: Figure out how to pass tags
+-#LABEL org.opencontainers.image.version="0.132"
+-ARG DEBIAN_FRONTEND=noninteractive
+-ENV PORT=8000
+-WORKDIR /app
+-# NVIDIA Cache workaround (TEMPORARY)
+-RUN set -eux; \
+-    grep -R "developer.download.nvidia.com" /etc/apt/sources.list /etc/apt/sources.list.d/*.list 2>/dev/null || true; \
+-    grep -Rl "developer.download.nvidia.com" /etc/apt 2>/dev/null | while IFS= read -r f; do \
+-      echo "commenting $f"; \
+-      sed -i.bak -E 's/^(.*developer\.download\.nvidia\.com.*)$/#\1/' "$f"; \
+-    done; \
+-    rm -rf /var/lib/apt/lists/*;
+-# System deps
+-RUN apt-get update && apt-get upgrade -y
+-RUN apt-get install -y --no-install-recommends \
+-        bash \
+-        ca-certificates \
+-        curl \
+-        git \
+-        vim \
+-        build-essential \
+-        libsndfile1-dev \
+-        ffmpeg \
+-        python3-full \
+-        python3-dev \
+-        python3-pip \
+-        python3-venv
+-# Install Python deps. Use PyTorch cu124 wheel index so the cu124 binary resolves.
+-COPY requirements.txt .
+-RUN python3 -m venv /opt/venv && \
+-    /opt/venv/bin/python -m pip install --upgrade pip setuptools wheel && \
+-#   /opt/venv/bin/pip install torch==2.7.1 torchvision==0.22.1 torchaudio==2.7.1 fastapi>=0.111.0 -r requirements.txt
+-    /opt/venv/bin/pip install --no-cache-dir --extra-index-url https://download.pytorch.org/whl/cu128 -r requirements.txt
+-ENV PATH="/opt/venv/bin:${PATH}"
+-# Copy app
+-COPY app ./app
+-COPY templates ./templates
+-# Reset NVIDIA stuff
+-RUN set -eux; \
+-    # restore any files moved to tmp backup
+-    if ls /tmp/apt-sources-backup/* >/dev/null 2>&1; then \
+-      mkdir -p /etc/apt/sources.list.d; \
+-      for f in /tmp/apt-sources-backup/*; do \
+-        echo "restoring $f -> /etc/apt/sources.list.d/"; \
+-        mv "$f" /etc/apt/sources.list.d/ || true; \
+-      done; \
+-    fi; \
+-    # restore any renamed .disabled files
+-    for f in /etc/apt/sources.list.d/*.disabled; do \
+-      [ -f "$f" ] && mv "$f" "${f%.disabled}"; \
+-    done; \
+-    # restore any sed-created .bak backups (moves file.bak -> file)
+-    for f in /etc/apt/sources.list.d/*.bak; do \
+-      [ -f "$f" ] && mv "$f" "${f%.bak}"; \
+-    done; \
+-    # restore top-level sources.list backup if present
+-    [ -f /etc/apt/sources.list.bak ] && mv /etc/apt/sources.list.bak /etc/apt/sources.list || true; \
+-    # refresh apt lists
+-    rm -rf /var/lib/apt/lists/*;
+-#    apt-get update
+-# Delete cache
+-RUN rm -rf /var/lib/apt/lists/*
+-#Open Ports
+-EXPOSE 8000
+-# Use sh -c so $PORT expands
+-CMD ["sh", "-c", "uvicorn app.main:app --host 0.0.0.0 --port $PORT"]
++FROM nvidia/cuda:12.8.0-devel-ubuntu24.04
++ARG DEBIAN_FRONTEND=noninteractive
++ENV PORT=8000
++WORKDIR /app
++
++# TEMP: NVIDIA repo workaround (you said ignore — kept in case needed)
++RUN set -eux; \
++    grep -R "developer.download.nvidia.com" /etc/apt/sources.list /etc/apt/sources.list.d/*.list 2>/dev/null || true; \
++    grep -Rl "developer.download.nvidia.com" /etc/apt 2>/dev/null | while IFS= read -r f; do \
++      sed -i.bak -E 's/^(.*developer\.download\.nvidia\.com.*)$/#\1/' \"$f\" || true; \
++    done; \
++    rm -rf /var/lib/apt/lists/*;
++
++# System deps (keep it minimal but include audio libs)
++RUN apt-get update && apt-get upgrade -y
++RUN apt-get install -y --no-install-recommends \
++        bash \
++        ca-certificates \
++        curl \
++        git \
++        vim \
++        build-essential \
++        libsndfile1 \
++        ffmpeg \
++        sox \
++        python3 \
++        python3-dev \
++        python3-venv \
++        wget \
++        ca-certificates
++
++# Set cache locations inside the image so downloads land in writable paths
++ENV HF_HOME=/app/.cache/huggingface
++ENV TORCH_HOME=/app/.cache/torch
++RUN mkdir -p $HF_HOME $TORCH_HOME && chmod -R 777 /app/.cache || true
++
++# Copy requirements first so we can leverage layer caching when editing code
++COPY requirements.txt /app/requirements.txt
++
++# Create venv, install torch (GPU wheel) explicitly, then install the rest.
++# Adjust torch versions to match your CUDA runtime. We use cu128 for CUDA 12.8.
++RUN python3 -m venv /opt/venv && \
++    /opt/venv/bin/python -m pip install --upgrade pip setuptools wheel && \
++    /opt/venv/bin/pip install --no-cache-dir --extra-index-url https://download.pytorch.org/whl/cu128 \
++        torch==2.7.0+cu128 torchvision==0.22.1 torchaudio==2.7.1 && \
++    /opt/venv/bin/pip install --no-cache-dir -r /app/requirements.txt && \
++    # quick sanity checks - fail build early if core pieces missing
++    /opt/venv/bin/python -c "import fastapi, uvicorn, torch; print('py ok', torch.__version__, 'cuda_available=', torch.cuda.is_available())"
++
++# Ensure venv is used in all subsequent steps
++ENV PATH="/opt/venv/bin:${PATH}"
++
++# Copy the app (after deps) so code changes don't bust installed layers
++COPY app ./app
++COPY templates ./templates
++COPY gpu_check.py /app/gpu_check.py
++
++# Restore any NVIDIA sources if your workaround created backups (kept intact)
++RUN set -eux; \
++    if ls /tmp/apt-sources-backup/* >/dev/null 2>&1; then \
++      mkdir -p /etc/apt/sources.list.d; \
++      for f in /tmp/apt-sources-backup/*; do mv \"$f\" /etc/apt/sources.list.d/ || true; done; \
++    fi; \
++    for f in /etc/apt/sources.list.d/*.disabled; do [ -f \"$f\" ] && mv \"$f\" \"${f%.disabled}\" || true; done; \
++    for f in /etc/apt/sources.list.d/*.bak; do [ -f \"$f\" ] && mv \"$f\" \"${f%.bak}\" || true; done; \
++    [ -f /etc/apt/sources.list.bak ] && mv /etc/apt/sources.list.bak /etc/apt/sources.list || true; \
++    rm -rf /var/lib/apt/lists/*;
++
++EXPOSE 8000
++CMD ["sh", "-c", "/opt/venv/bin/uvicorn app.main:app --host 0.0.0.0 --port $PORT --log-level info"]
+ 
+--- a/requirements.txt
++++ b/requirements.txt
+@@ -1,7 +1,7 @@
+ uvicorn[standard]==0.29.0
+ jinja2==3.1.4
+ python-multipart==0.0.9
+ pydantic==2.7.3
+-torch==2.7.0+cu128
+-nemo_toolkit[asr]==2.4.0
+-soundfile==0.12.1
++fastapi==0.116.0
++nemo_toolkit[asr]==2.4.0
++soundfile==0.12.1
+--- a/app/main.py
++++ b/app/main.py
+@@ -1,66 +1,83 @@
+-from pathlib import Path
+-import uuid
+-import shutil
+-import nemo.collections.asr as nemo_asr
+-from fastapi import FastAPI, File, UploadFile, Request
+-from fastapi.responses import HTMLResponse, StreamingResponse
+-from fastapi.templating import Jinja2Templates
+-app = FastAPI()
+-templates = Jinja2Templates(directory="templates")
+-# Load the Parakeet model once at container start.
+-model_name = "nvidia/parakeet-tdt-0.6b-v3"
+-print("Loading Parakeet …")
+-asr_model = nemo_asr.models.ASRModel.from_pretrained(model_name)
+-# Optional: try to set a local attention model for long audio inputs.
+-# This API may differ across NeMo releases; the try/except avoids crashes if unsupported.
+-try:
+-    asr_model.change_attention_model(
+-        self_attention_model="rel_pos_local_attn",
+-        att_context_size=[512, 512],
+-    )
+-except Exception:
+-    print("change_attention_model not available or failed — continuing with defaults")
+-@app.get("/", response_class=HTMLResponse)
+-async def index(request: Request):
+-    return templates.TemplateResponse("index.html", {"request": request})
+-@app.post("/transcribe")
+-async def transcribe(file: UploadFile = File(...)):
+-    upload_dir = Path("./data")
+-    upload_dir.mkdir(parents=True, exist_ok=True)
+-    file_path = upload_dir / f"{uuid.uuid4()}{Path(file.filename).suffix}"
+-    with open(file_path, "wb") as f:
+-        shutil.copyfileobj(file.file, f)
+-    def generator():
+-        out = asr_model.transcribe(
+-            [str(file_path)],
+-            timestamps=True,
+-            batch_size=1,
+-            return_timestamps="word",
+-            max_duration=90 * 60,
+-        )
+-        transcript = out[0]
+-        # Get text (fallback to string if attribute missing)
+-        try:
+-            text = transcript.text
+-        except Exception:
+-            text = str(transcript)
+-        yield f"Text: {text}\n\n"
+-        # Stream per-word timestamps if available. Adjust to your NeMo return shape.
+-        ts_obj = getattr(transcript, "timestamp", None)
+-        if isinstance(ts_obj, dict):
+-            word_list = ts_obj.get("word")
+-            if word_list:
+-                for ts in word_list:
+-                    start = ts.get("start") or ts.get("start_time")
+-                    end = ts.get("end") or ts.get("end_time")
+-                    txt = ts.get("text") or ts.get("word") or ""
+-                    if start is not None and end is not None:
+-                        yield f"{start:.2f}s – {end:.2f}s : {txt}\n"
++from pathlib import Path
++import uuid
++import shutil
++import os
++import logging
++from typing import Optional
++
++import torch
++import nemo.collections.asr as nemo_asr
++from fastapi import FastAPI, File, UploadFile, Request, HTTPException
++from fastapi.responses import HTMLResponse, StreamingResponse
++from fastapi.templating import Jinja2Templates
++
++app = FastAPI()
++templates = Jinja2Templates(directory="templates")
++
++# Globals for model and readiness
++asr_model: Optional[object] = None
++model_ready = False
++model_name = "nvidia/parakeet-tdt-0.6b-v3"
++logger = logging.getLogger("app.main")
++
++
++@app.on_event("startup")
++async def load_model():
++    global asr_model, model_ready
++    # ensure cache dirs exist (HF_HOME / TORCH_HOME set in Dockerfile)
++    try:
++        os.makedirs(os.environ.get("HF_HOME", "/app/.cache/huggingface"), exist_ok=True)
++        os.makedirs(os.environ.get("TORCH_HOME", "/app/.cache/torch"), exist_ok=True)
++    except Exception:
++        logger.exception("Failed to create cache dirs")
++
++    device = "cuda" if torch.cuda.is_available() else "cpu"
++    logger.info(f"Starting model load for {model_name} on device={device}")
++    try:
++        # from_pretrained may accept map_location for some wrappers; if not, fallback to .to(device)
++        asr_model = nemo_asr.models.ASRModel.from_pretrained(model_name, map_location=device)
++    except TypeError:
++        # older/newer API may not accept map_location; try loading then move
++        try:
++            asr_model = nemo_asr.models.ASRModel.from_pretrained(model_name)
++            try:
++                asr_model.to(device)
++            except Exception:
++                # some wrappers manage device internally; ignore if not supported
++                logger.info("Could not call .to(device) on model; continuing")
++        except Exception:
++            logger.exception("Model load failed")
++            asr_model = None
++    except Exception:
++        logger.exception("Model load failed")
++        asr_model = None
++
++    model_ready = asr_model is not None
++    if model_ready:
++        logger.info("Model loaded successfully")
++    else:
++        logger.warning("Model not loaded; service available but will return 503 for transcribe")
++
++
++@app.get("/health")
++async def health():
++    return {"ready": model_ready}
++
++
++@app.get("/", response_class=HTMLResponse)
++async def index(request: Request):
++    return templates.TemplateResponse("index.html", {"request": request})
++
++
++@app.post("/transcribe")
++async def transcribe(file: UploadFile = File(...)):
++    if not model_ready or asr_model is None:
++        raise HTTPException(status_code=503, detail="Model not ready")
++
++    upload_dir = Path("./data")
++    upload_dir.mkdir(parents=True, exist_ok=True)
++    file_path = upload_dir / f"{uuid.uuid4()}{Path(file.filename).suffix}"
++    with open(file_path, "wb") as f:
++        shutil.copyfileobj(file.file, f)
++
++    def generator():
++        out = asr_model.transcribe(
++            [str(file_path)],
++            timestamps=True,
++            batch_size=1,
++            return_timestamps="word",
++            max_duration=90 * 60,
++        )
++        transcript = out[0]
++        # Get text (fallback to string if attribute missing)
++        try:
++            text = transcript.text
++        except Exception:
++            text = str(transcript)
++        yield f"Text: {text}\n\n"
++        # Stream per-word timestamps if available. Adjust to your NeMo return shape.
++        ts_obj = getattr(transcript, "timestamp", None)
++        if isinstance(ts_obj, dict):
++            word_list = ts_obj.get("word")
++            if word_list:
++                for ts in word_list:
++                    start = ts.get("start") or ts.get("start_time")
++                    end = ts.get("end") or ts.get("end_time")
++                    txt = ts.get("text") or ts.get("word") or ""
++                    if start is not None and end is not None:
++                        yield f"{start:.2f}s – {end:.2f}s : {txt}\n"
++    return StreamingResponse(generator(), media_type="text/plain")
++
++# End of main.py
++
++--- a/gpu_check.py
++++ b/gpu_check.py
+@@ -0,0 +1,44 @@
++#!/usr/bin/env python3
++import subprocess
++import sys
++import torch
++
++def run_cmd(cmd):
++    try:
++        out = subprocess.check_output(cmd, shell=True, stderr=subprocess.STDOUT, text=True)
++        return out.strip()
++    except Exception as e:
++        return f"cmd_failed: {e}"
++
++def main():
++    print("python:", sys.version.splitlines()[0])
++    print("torch:", torch.__version__)
++    try:
++        print("cuda_available:", torch.cuda.is_available())
++        print("cuda_device_count:", torch.cuda.device_count())
++        if torch.cuda.is_available():
++            for i in range(torch.cuda.device_count()):
++                print(f"device[{i}]:", torch.cuda.get_device_name(i))
++    except Exception as e:
++        print("torch.cuda check failed:", e)
++
++    print("--- nvidia-smi output (if available) ---")
++    print(run_cmd("nvidia-smi || true"))
++
++if __name__ == '__main__':
++    main()
++
++# EOF
