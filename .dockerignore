@@ -9,3 +9,6 @@ venv/
 .gitignore
 data/
 *.log
+Dockerfile.bak
+Dockerfile.test
+restore_faith.patch
