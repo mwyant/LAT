@@ -1,0 +1,187 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8"/>
+  <title>Transcription Assistant</title>
+  <script src="https://unpkg.com/wavesurfer.js"></script>
+  <style>
+    body { font-family: Inter, Roboto, Arial, sans-serif; margin: 20px; }
+    .header { display:flex; gap:20px; align-items:center; }
+    .metrics { margin-left: auto; }
+    #waveform { width: 100%; height: 128px; background: #222; margin-top: 10px; }
+    .controls { margin-top: 10px; }
+    .progress { width: 100%; background:#eee; height: 12px; border-radius:6px; overflow:hidden; }
+    .progress > div { height: 100%; background: #2b8aef; width:0%; }
+    textarea { font-family: monospace; white-space: pre-wrap; }
+    button, input[type="file"], input[type="text"] { margin-right: 8px; }
+  </style>
+</head>
+<body>
+  <div class="header">
+    <h2>Transcription Assistant</h2>
+    <div class="metrics" id="metrics">Loading metrics...</div>
+  </div>
+
+  <!-- Controls: separate Upload & Transcode and Start Transcription -->
+  <div>
+    <input id="file" type="file" accept="audio/*"/>
+    <button id="upload">Upload &amp; Transcode</button>
+    <button id="transcribe" disabled>Start Transcription (async)</button>
+    <button id="download" disabled>Download Transcript</button>
+    <a id="download_link" href="#" style="margin-left:10px; display:none;" download>Transcript file</a>
+    <button id="reload-model">Reload Model</button>
+    <input id="switch-model" type="text" placeholder="model name (optional)"/>
+    <button id="switch-model-btn">Switch Model</button>
+    <div id="status" style="display:inline-block; margin-left:10px;">idle</div>
+  </div>
+
+  <div id="waveform"></div>
+
+  <div class="controls">
+    <button id="play">Play</button>
+    <button id="pause">Pause</button>
+    <button id="stop">Stop</button>
+  </div>
+
+  <div style="margin-top:10px">
+    <div class="progress"><div id="progressbar"></div></div>
+    <pre id="log" style="height:200px; overflow:auto; background:#111; color:#ddd; padding:10px;"></pre>
+  </div>
+
+  <!-- Transcript text area (hidden until transcript available) -->
+  <div style="margin-top:10px; display:none;" id="transcript_container">
+    <label for="transcript_text">Transcript (copyable):</label><br/>
+    <textarea id="transcript_text" style="width:100%; height:220px;"></textarea>
+  </div>
+
+<script>
+const API = {
+  upload: '/upload',
+  transcribe: '/transcribe',
+  status: (id)=>'/status/'+id,
+  events: (id)=>'/events/'+id,
+  download: (id)=>'/download/'+id,
+  reload: '/admin/reload',
+  switch_model: '/admin/switch_model',
+  metrics: '/metrics'
+};
+
+let wavesurfer = WaveSurfer.create({container:'#waveform', waveColor:'#97b', progressColor:'#2b8aef', height: 120});
+let currentFile = null;
+let currentJob = null;
+
+async function refreshMetrics(){
+  try {
+    let r = await fetch(API.metrics);
+    if (!r.ok) { document.getElementById('metrics').innerText = 'Metrics: N/A'; return; }
+    let j = await r.json();
+    document.getElementById('metrics').innerText = 'Jobs: ' + j.jobs_created + ' | Done: ' + j.jobs_completed + ' | Failed: ' + j.jobs_failed;
+  } catch(e){
+    console.error(e);
+  }
+}
+
+document.getElementById('file').addEventListener('change', (ev)=>{
+  const f = ev.target.files[0];
+  if(!f) return;
+  currentFile = f;
+  const url = URL.createObjectURL(f);
+  wavesurfer.load(url);
+  document.getElementById('transcribe').disabled = false;
+  document.getElementById('status').innerText = 'file selected: ' + f.name;
+});
+
+// Upload (separate)
+document.getElementById('upload').addEventListener('click', async ()=>{
+  if(!currentFile){ alert('Choose a file first'); return; }
+  const fd = new FormData();
+  fd.append('file', currentFile);
+  document.getElementById('status').innerText = 'uploading...';
+  const resp = await fetch(API.upload, {method:'POST', body:fd});
+  if(!resp.ok){ alert('Upload failed: '+resp.statusText); return; }
+  const job = await resp.json();
+  document.getElementById('status').innerText = 'uploaded; job_id: '+job.job_id;
+  currentJob = job.job_id;
+  listenEvents(currentJob);
+});
+
+// Transcribe (separate)
+document.getElementById('transcribe').addEventListener('click', async ()=>{
+  if(!currentJob) { alert('Upload first'); return; }
+  const resp = await fetch(API.transcribe, {method:'POST', headers:{'content-type':'application/json'}, body: JSON.stringify({job_id: currentJob})});
+  if(!resp.ok){ alert('Transcribe failed: '+resp.statusText); return; }
+  const j = await resp.json();
+  document.getElementById('status').innerText = 'transcribe submitted: '+j.job_id;
+  listenEvents(j.job_id);
+});
+
+async function listenEvents(job_id){
+  const es = new EventSource(API.events(job_id));
+  es.onmessage = function(ev){ console.log('message', ev.data); };
+  es.addEventListener('status', function(e){
+    const data = JSON.parse(e.data);
+    document.getElementById('log').textContent += 'STATUS: '+ JSON.stringify(data) + '\\n';
+    refreshMetrics();
+  });
+  es.addEventListener('progress', function(e){
+    const data = JSON.parse(e.data);
+    document.getElementById('progressbar').style.width = data.progress+'%';
+    document.getElementById('log').textContent += 'PROGRESS: '+ JSON.stringify(data) + '\\n';
+  });
+  es.addEventListener('done', function(e){
+    const data = JSON.parse(e.data);
+    const filename = data.filename || (data.result_path ? (data.result_path.split('/').pop()) : null);
+    const link = document.getElementById('download_link');
+    link.href = API.download(job_id);
+    if (filename) {
+      link.textContent = filename;
+      link.style.display = 'inline-block';
+      link.setAttribute('download', filename);
+    } else {
+      link.textContent = 'download transcript';
+      link.style.display = 'inline-block';
+    }
+    document.getElementById('download').disabled = false;
+    document.getElementById('download').onclick = ()=> { window.location = API.download(job_id); }
+    document.getElementById('status').innerText = 'done: ' + (filename || data.result_path || '');
+    fetch(API.download(job_id))
+      .then(resp => { if(!resp.ok) throw new Error('Failed'); return resp.text(); })
+      .then(text => {
+        const container = document.getElementById('transcript_container');
+        const ta = document.getElementById('transcript_text');
+        ta.value = text;
+        container.style.display = 'block';
+      }).catch(err => console.warn('Could not fetch transcript text:', err));
+    refreshMetrics();
+    es.close();
+  });
+  es.addEventListener('error', function(e){
+    try { const data = JSON.parse(e.data); document.getElementById('status').innerText = 'error: ' + (data.error || 'unknown'); document.getElementById('log').textContent += 'ERROR: '+ JSON.stringify(data) + '\\n'; } catch(_) {}
+    es.close();
+  });
+}
+
+document.getElementById('play').addEventListener('click', ()=>wavesurfer.play());
+document.getElementById('pause').addEventListener('click', ()=>wavesurfer.pause());
+document.getElementById('stop').addEventListener('click', ()=>wavesurfer.stop());
+
+document.getElementById('reload-model').addEventListener('click', async ()=>{
+  document.getElementById('status').innerText = 'reloading model...';
+  const resp = await fetch(API.reload, {method:'POST'});
+  const j = await resp.json();
+  document.getElementById('status').innerText = 'reload: '+JSON.stringify(j);
+});
+
+document.getElementById('switch-model-btn').addEventListener('click', async ()=>{
+  const m = document.getElementById('switch-model').value.trim();
+  if(!m) { alert('enter model name'); return; }
+  document.getElementById('status').innerText = 'switching to '+m;
+  const resp = await fetch(API.switch_model, {method: 'POST', headers:{'content-type':'application/json'}, body: JSON.stringify({model_name:m})});
+  const j = await resp.json();
+  document.getElementById('status').innerText = 'switch: '+JSON.stringify(j);
+});
+
+refreshMetrics();
+</script>
+</body>
+</html>
